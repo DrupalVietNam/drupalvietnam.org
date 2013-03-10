@@ -1,0 +1,25 @@
+name = Doubleclick for Publishers
+description = Integrates DFP Google Publisher Tags onto a site.
+core = 7.x
+package = Advertising
+version = "7.x-1.x"
+project = "dfp"
+
+configure = admin/structure/dfp_ads/settings
+
+dependencies[] = system (>= 7.14)
+dependencies[] = ctools (>= 7.x-1.0-rc2)
+
+files[] = dfp.install
+files[] = dfp.module
+files[] = dfp.admin.inc
+files[] = plugins/export_ui/dfp_tag_ui.class.inc
+files[] = plugins/export_ui/dfp_ctools_export_ui.inc
+files[] = tests/dfp.test
+
+; Information added by drupal.org packaging script on 2012-06-01
+version = "7.x-1.0-beta2"
+core = "7.x"
+project = "dfp"
+datestamp = "1338588078"
+

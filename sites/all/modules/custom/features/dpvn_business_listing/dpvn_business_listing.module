@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the dpvn_business_listing feature.
+ */
+
+include_once 'dpvn_business_listing.features.inc';

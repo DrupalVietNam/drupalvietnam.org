@@ -1,0 +1,4 @@
+name = DPVN News
+description = "Custom features for the news pages."
+version = VERSION
+core = 7.x

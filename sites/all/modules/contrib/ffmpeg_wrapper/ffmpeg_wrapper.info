@@ -1,0 +1,12 @@
+; $Id$
+name = FFmpeg Wrapper
+description = "A Drupal API wrapper for the FFmpeg binary"
+core = 7.x
+files[] = ffmpeg_wrapper_class.inc
+configure = admin/config/media/ffmpeg_wrapper
+; Information added by drupal.org packaging script on 2012-03-10
+version = "7.x-1.0-alpha2"
+core = "7.x"
+project = "ffmpeg_wrapper"
+datestamp = "1331406352"
+

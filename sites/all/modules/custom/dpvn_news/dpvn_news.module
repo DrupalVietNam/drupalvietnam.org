@@ -1,0 +1,61 @@
+<?php
+
+/**
+ * @file
+ * Custom code for the news page, planet Drupal and similar pages.
+ * @see http://drupalcode.org/project/drupalorg.git/blob_plain/refs/heads/6.x-3.x:/drupalorg_news/drupalorg_news.module
+ */
+ 
+ /**
+ * Vocabulary used for news forum topic tagging.
+ */
+define('DPVN_NEWS_VID', 1);
+
+/**
+ * Implementation of hook_block_info().
+ */
+function dpvn_news_block_info() {
+  $blocks['planet-list']['info'] = t('Planet Drupal subscriptions');
+  $blocks['planet-list']['cache'] = 'DRUPAL_CACHE_GLOBAL';
+  return $blocks;
+}
+
+/**
+ * Implementation of hook_block_view().
+ */
+function dpvn_news_block_view($delta = '') {
+  switch ($delta) {
+    case 'planet-list':
+      $block['content'] = dpvn_news_planet_drupal_block();
+      return $block;
+  }
+}
+
+function dpvn_news_planet_drupal_block() {
+  $output = '';
+  $description = db_select('aggregator_category', 'ac')
+                    ->fields('ac', array('description'))
+                    ->condition('ac.cid', DPVN_NEWS_VID)
+                    ->execute()
+                    ->fetchColumn();
+
+  $feeds = db_select('aggregator_feed', 'f')->fields('f');
+  $feeds->join('aggregator_category_feed', 'c', 'f.fid = c.fid');
+  $feeds->condition('c.cid', DPVN_NEWS_VID);
+  $feeds->orderBy('f.title');
+  $feeds = $feeds->execute()->fetchAll();
+
+  $list = '<div class="item-list"><ul>';
+  $counter = 0;
+  foreach ($feeds as $feed) {
+    $list .= '<li>'.  l($feed->title, $feed->link)  .' ('. l('feed', $feed->url) .')</li>'; 
+    $counter++;
+  }
+  $list .= '</ul></div>';
+  
+  $output .= '<p>'. filter_xss_admin($description) .' '. t('Collecting posts from the following @num sources:', array('@num' => $counter)) .'</p>';
+  $output .= $list;
+  $output .= theme('xml_icon', url('planet/rss.xml'));
+
+  return $output;
+}

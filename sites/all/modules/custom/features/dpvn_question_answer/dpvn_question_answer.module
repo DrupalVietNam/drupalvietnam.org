@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the Drupal Vietnam question & answer feature.
+ */
+
+include_once 'dpvn_question_answer.features.inc';

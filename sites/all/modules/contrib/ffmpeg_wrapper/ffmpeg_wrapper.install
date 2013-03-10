@@ -1,0 +1,22 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * Install file for ffmpeg wrapper. Ensures path to ffmpeg.
+ */
+
+/**
+ * Implementation of hook_install().
+ */
+function ffmpeg_wrapper_install() {
+  // Include the module functions
+  require_once(drupal_get_path('module', 'ffmpeg_wrapper') . '/ffmpeg_wrapper.module');
+  if (! ffmpeg_wrapper_which_ffmpeg()) {
+    drupal_set_message(t('FFmpeg Wrapper could not find the path to the FFmpeg binary.
+      You will need to set this by hand at: !link',
+      array('!link' => l('admin/config/media/ffmpeg_wrapper', 'admin/config/media/ffmpeg_wrapper'))
+    ), 'error');
+  }
+}

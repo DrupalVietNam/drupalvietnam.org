@@ -1,0 +1,508 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * This module provides a wrapper around FFmpeg for integration with other modules
+ */
+
+
+require_once(drupal_get_path('module', 'ffmpeg_wrapper') . '/ffmpeg_wrapper_class.inc');
+
+
+/* ************************************************ */
+/* DRUPAL HOOKS */
+/* ************************************************ */
+
+/**
+ * Implements hook_menu().
+ */
+function ffmpeg_wrapper_menu() {
+  $items = array();
+  $items['admin/config/media/ffmpeg_wrapper'] = array(
+    'title' => 'FFmpeg Wrapper Settings',
+    'description' => 'Adminster FFmpeg Wrapper settings.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ffmpeg_wrapper_admin'),
+    'access arguments' => array('administer ffmpeg wrapper'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'ffmpeg_wrapper.admin.inc'
+  );
+  $items['admin/config/media/ffmpeg_wrapper/default'] = array(
+    'title' => 'FFmpeg Wrapper Settings',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_perm().
+ */
+function ffmpeg_wrapper_permission() {
+  return array(
+    'administer my module' => array(
+      'title' => t('Administer FFmpeg Wrapper'),
+      'description' => t('Configure settings for FFmpeg Wrapper'),
+    ),
+  );
+}
+
+
+/* ************************************************ */
+/* Interactions with ffmpeg                         */
+/* ************************************************ */
+
+/**
+ * Get data from ffmpeg.
+ *
+ * @param $command
+ *   The options to run ffmpeg with.
+ * @param $verbosity
+ *   FFmpeg verbosity control. Defaults allows for good data checking.
+ * @return
+ *   Output of the command.
+ */
+function ffmpeg_wrapper_run_command($command, $verbosity = -1) {
+  $ffmpeg = new ffmpeg_wrapper();
+  $ffmpeg->run_command($command, $verbosity);
+  return $ffmpeg;
+}
+
+/**
+ * Display binary information
+ *
+ * @param $reset
+ *   Should the cache be reset?
+ * @return
+ *   Array of options.
+ */
+function ffmpeg_wrapper_get_version($reset = FALSE) {
+  if (! ($version = variable_get('ffmpeg_wrapper_version')) || $reset) {
+    $ffmpeg = new ffmpeg_wrapper();
+    $version = $ffmpeg->get_version('raw');
+    variable_set('ffmpeg_wrapper_version', $version);
+  }
+  return $version;
+}
+
+
+
+/**
+ * Get an array of codec types usable on this system.
+ *
+ * @param $reset
+ *   Should the cache be reset?
+ * @return $codecs
+ *   Array of codecs or specific encode/decode options.
+ */
+function ffmpeg_wrapper_get_codecs($reset = FALSE) {
+  if (! ($codecs = variable_get('ffmpeg_wrapper_codecs')) || $reset) {
+    $ffmpeg = new ffmpeg_wrapper();
+    $codecs = $ffmpeg->get_codecs();
+    variable_set('ffmpeg_wrapper_codecs', $codecs);
+  }
+  return $codecs;
+}
+
+
+/**
+ * Get an array of format types usable on this system.
+ *
+ * @param $reset
+ *   Should the cache be reset?
+ * @return
+ *   Array of options.
+ */
+function ffmpeg_wrapper_get_formats($reset = FALSE) {
+  if (! ($formats = variable_get('ffmpeg_wrapper_formats')) || $reset) {
+    $ffmpeg = new ffmpeg_wrapper();
+    $formats = $ffmpeg->get_formats();
+    variable_set('ffmpeg_wrapper_formats', $formats);
+  }
+  return $formats;
+}
+
+
+/**
+ * This function returns file meta data from an incoming file
+ *
+ * @param $path
+ * @return array
+ */
+function ffmpeg_wrapper_get_file_data($filepath = NULL) {
+  // We static cache files to prevent multiple calls to ffmpeg
+  static $files;
+  if (! empty($files[$filepath])) {
+    return $files[$filepath];
+  }
+  $ffmpeg = new ffmpeg_wrapper();
+  if ($data = $ffmpeg->get_file_data($filepath)) {
+    return $data;
+  }
+  return;
+}
+
+
+/**
+ * Get the duration of a file.
+ *
+ * @param $path
+ *   The path to file.
+ */
+function ffmpeg_wrapper_get_file_duration($path, $timecode = FALSE) {
+  $ffmpeg = new ffmpeg_wrapper();
+  return $ffmpeg->get_file_duration($path, $timecode);
+}
+
+
+/**
+ * Get a list of codecs in key value form- for use in form display
+ *
+ * @param $type
+ *   audio or video.
+ * @return
+ *   Array of codec names.
+ */
+function ffmpeg_wrapper_list_codecs($type) {
+  static $codecs;
+  if (! empty($codecs[$type])) {
+    return $codecs[$type];
+  }
+  $codecs = array();
+  $codecs[$type] = array(0 => t('Use default'));
+  // get list of avaiable audio and video codecs
+  $codec_list = ffmpeg_wrapper_get_codecs();
+  if ($codec_list) {
+    foreach ($codec_list as $codec) {
+      if ($codec['encode'] && $codec['type'] == $type) {
+        $codecs[$type][$codec['type']] = $codec['type'];
+      }
+    }
+  }
+  return $codecs[$type];
+}
+
+
+/**
+ * Helper function to build the list of output formats on the system.
+ *
+ * @return $formats
+ *   Array of key values
+ */
+function ffmpeg_wrapper_list_formats() {
+  // Get all of the formats that we can encoded in
+  $outputs = ffmpeg_wrapper_get_formats();
+  // rebuild as a select array
+  $formats = array(t('Select output type'));
+  foreach ($outputs as $output) {
+    if ($output['encode']) {
+      $formats[$output] = $output;
+    }
+  }
+  return $formats;
+}
+
+
+/**
+ * Check to see if this file is decodeable with the installed FFmpeg
+ *
+ * @param $uri
+ *   Object, string, a Drupal file object or a system path
+ * @param $types
+ *   array, what kind of decode do we need to check for
+ * @return $decodable
+ *   boolean, TRUE if file is in the list of decodeable files.
+ */
+function ffmpeg_wrapper_can_decode($uri, $types = array('video', 'audio')) {
+  if (is_object($uri)) {
+    $uri = $uri->uri;
+  }
+  dpm(drupal_realpath($uri));
+
+  $ffmpeg = new ffmpeg_wrapper();
+  return $ffmpeg->can_decode_file(ffmpeg_wrapper_uri_to_path($uri), $types);
+}
+
+
+/**
+ * Utility function to return a system path to a file
+ *
+ * @param string $uri
+ *   system path or uri
+ * @return type
+ */
+function ffmpeg_wrapper_uri_to_path($uri) {
+  if (file_stream_wrapper_valid_scheme(file_uri_scheme($uri))) {
+    return drupal_realpath($uri);
+  }
+  return $uri;
+}
+
+
+/**
+ * Calculate an output size and a padding value for a video file.
+ *
+ * @param $file
+ *   Path to the file to be converted.
+ * @param $size
+ *   The maximum dimensions of the output file, expressed as XXXxYYY. This will
+ *   be cropped to match the original file's proportions and the remaining
+ *   space will be used to calculate the padding.
+ * @param $return
+ *   Either 'padding' or 'size'.
+ * @return
+ *   Depending on the value of $return, the function returns either the size
+ *   expressed as XXXxYYY, or the actual padding argument for FFmpeg, ie.
+ *   "-padtop XX -padbottom XX". The result is statically cached, so you can
+ *   call it multiple times without permormance issues.
+ */
+function ffmpeg_wrapper_padded_size($file, $size, $return = 'padding') {
+  static $file_proportions;
+
+  // Cache file proportions statically.
+  if (! isset($file_proportions)) {
+    $file_proportions = array();
+  }
+  if (isset($file_proportions[$file])) {
+    return ($return == 'size') ? $file_proportions[$file][0] : $file_proportions[$file][1];
+  }
+
+  else {
+    $pad = '';
+
+    // Determine source file's dimensions and proportions.
+    $info = ffmpeg_wrapper_get_file_data($file);
+    if ($info && isset($info['video'])) {
+      list($orig_x, $orig_y) = explode('x', $info['video']['s']);
+      $orig_q = $orig_x / $orig_y;
+
+      // Determine output dimensions and proportions.
+      list($dest_x, $dest_y) = explode('x', $size);
+      $dest_q = $dest_x / $dest_y;
+
+      // Calculate new output size and padding.
+      if ($orig_q > $dest_q) {
+        // Width is the determining factor.
+        $dest_y_calc = round($dest_x / $orig_q);
+        // Make sure height is divisible by 2, otherwise ffmpeg freaks out.
+        $dest_y_calc &= ~1;
+        $size = $dest_x . 'x' . $dest_y_calc;
+        $padding = $dest_y - $dest_y_calc;
+        $padoptions = '-padtop %d -padbottom %d';
+      }
+      elseif ($dest_q > $orig_q) {
+        // Height is the determining factor.
+        $dest_x_calc = round($dest_y * $orig_q);
+        // Make sure width is divisible by 2, otherwise ffmpeg freaks out.
+        $dest_x_calc &= ~1;
+        $size = $dest_x_calc . 'x' . $dest_y;
+        $padding = $dest_x - $dest_x_calc;
+        $padoptions = '-padleft %d -padright %d';
+      }
+
+      // Calculate padding on each side. Each value has to be a multiple of 2.
+      $padding &= ~1;
+      $padding1 = floor($padding / 2);
+      $padding1 &= ~1;
+      $padding2 = $padding - $padding1;
+      $pad = sprintf($padoptions, $padding1, $padding2);
+    }
+
+    // Save and return the results.
+    $file_proportions[$file] = array($size, $pad);
+    return ($return == 'size') ? $size : $pad;
+  }
+}
+
+
+/**
+ * Display a table of the supported ffmpeg file formats.
+ *
+ * @return $output
+ *   Table list of formats
+ */
+function ffmpeg_wrapper_formats_display() {
+  $header = array(t('Format'), t('Description'), t('Decode'), t('Encode'));
+  $rows = array();
+  foreach (ffmpeg_wrapper_get_formats() as $format) {
+    $rows[] = array(
+      'format' => $format['format'],
+      'description' => $format['description'],
+      'decode' => ($format['decode'] ? t('Yes') : t('No')),
+      'encode' => ($format['encode'] ? t('Yes') : t('No')),
+    );
+  }
+  $output = theme('table', array('header' => $header, 'rows' => $rows));
+  return $output;
+}
+
+
+/**
+ * Display a table of the ffmpeg encoding and decoding options.
+ *
+ * @return $output
+ *   Table list of codecs
+ */
+function ffmpeg_wrapper_codecs_display() {
+  $header = array(t('Codec'), t('Codec type'), t('Decode'), t('Encode'));
+  $rows = array();
+  foreach (ffmpeg_wrapper_get_codecs() as $codec) {
+    $rows[] = array(
+      'format' => $codec['format'],
+      'type' => $codec['type'],
+      'decode' => ($codec['decode'] ? t('Yes') : t('No')),
+      'encode' => ($codec['encode'] ? t('Yes') : t('No')),
+    );
+  }
+  return theme('table', array('header' => $header, 'rows' => $rows));
+}
+
+
+/**
+ * Utility function to convert a file based on form parameters
+ *
+ * @param $parms
+ *   array, list of ffmpeg commands that are used, includes $source and $destination
+ * @return object
+ */
+function ffmpeg_wrapper_convert_file($params, $file = FALSE) {
+  $ffmpeg = new ffmpeg_wrapper();
+
+  // First error check, make sure that we can decode this kind of file
+  if (! $ffmpeg->can_decode_file($params['source'])) {
+    $message = 'FFmpeg Wrapper can not decode this file: !file Error: !error';
+    $variables = array(
+      '!file' => l($params['source'], $params['source']),
+      '!error' => implode('<p>', $ffmpeg->errors)
+    );
+    watchdog('ffmpeg_wrapper', $message, $variables, WATCHDOG_ERROR);
+    return $ffmpeg;
+  }
+
+  // Set the input file
+  $ffmpeg->input_file = $params['source'];
+  $source = escapeshellarg($params['source']);
+  // Is there a Drupal being passed in?
+  if ($file) {
+    $ffmpeg->file = $file;
+  }
+
+  // Build the output file path if we don't have one. Use the output type as the extension.
+  if (! empty($params['destination'])) {
+    $destination = escapeshellarg($params['destination']);
+    $ffmpeg->output_file = $params['destination'];
+  }
+  else {
+    // Create the destination path
+    $pattern = "/[^a-zA-Z0-9\.]/";
+    $filename = preg_replace($pattern, '_', basename($params['source']));
+    // File name is set to the source plus the codec
+    $filename .= '.' . $params['output_type'];
+    $destination = file_create_filename($filename, file_directory_temp());
+    $ffmpeg->output_file = $destination;
+    $destination = escapeshellarg($destination);
+  }
+
+  // Did the admin define a specific FFmpeg comand to run?
+  // @TODO should probably figure out some kind of validation scheme here.
+  if (! empty($params['use_custom_command']) && $params['custom_command']) {
+    $options[] = str_replace(
+      array('%in_file', '%out_file', '%file_name'),
+      array(
+        $source,
+        $destination,
+        pathinfo($destination, PATHINFO_FILENAME)
+      ),
+      $params['custom_command']
+    );
+  }
+  // Build a standard configuration
+  else {
+    // build the ffmpeg command structure out
+    $options = array();
+
+    // Input file. Spaces in file names cause issues on the command line
+    $options[] = "-i " . $source;
+
+    // Audio ----------------------------------
+    // Use a specifc codec? Default is 0
+    if (! empty($params['audio_codec'])) {
+      $options[] =  '-acodec ' . $params['audio_acodec'];
+    }
+    // Use a specific sample rate
+    if (! empty($params['audio_samplerate'])) {
+      $options[] = '-ar ' . $params['audio_samplerate'];
+    }
+    // Use a specific bit rate?
+    if (! empty($params['audio_bitrate'])) {
+      $options[] = '-ab ' . $params['audio_bitrate'];
+    }
+
+    // Video ----------------------------------
+    // Codec
+    if (! empty($params['video_codec'])) {
+      $options[] = '-vcodec ' . $params['video_codec'];
+    }
+    // Framesize
+    if (! empty($params['video_size'])) {
+      $options[] = '-s ' . $params[$params['video_size'] == 'other' ? 'video_size_other' : 'video_size'];
+    }
+    // Use a custom bitrate
+    if (! empty($params['video_bitrate']) && $params['video_bitrate'] == 'other' && ! empty($params['video_bitrate_other'])) {
+      $options[] = '-b ' . $params['video_bitrate_other'];
+    }
+    else if (! empty($params['video_bitrate']) ) {
+      $options[] = '-b ' . $params['video_bitrate'];
+    }
+    // Frame rate
+    if (! empty($params['video_fps'])) {
+      $options[] = '-r ' . $params['video_fps'];
+    }
+    // Truncating option
+    if (! empty($params['video_truncate_time'])) {
+      $options[] = '-t ' . $params['video_truncate_time'];
+    }
+
+    // Add the output file
+    $options[] = $destination;
+  }
+
+  $ffmpeg->file_data = ffmpeg_wrapper_get_file_data($params['source']);
+  $ffmpeg->run_command(implode(" ", $options));
+  return $ffmpeg;
+}
+
+
+
+/**
+ * Utility function to find the path to the ffmpeg binary
+ *
+ * @param $ffmpeg is an ffmpeg object being passed in
+ * @return boolean
+ */
+function ffmpeg_wrapper_which_ffmpeg($ffmpeg = FALSE) {
+  if (! $ffmpeg) {
+    $ffmpeg = new stdClass;
+  }
+  // See if we can find ffmpeg in the drupal root anywhere
+  // This should return the execution path of drupal. Below will remove index.php from the path
+  $path = dirname($_SERVER['SCRIPT_FILENAME']) . '/sites/all/bin/ffmpeg';
+  if (file_exists($path)) {
+    variable_set('ffmpeg_wrapper_path', $path);
+    $ffmpeg->path = $path . '/ffmpeg';
+    drupal_set_message($path);
+    return TRUE;
+  }
+  elseif ($path = exec('export PATH=$PATH:/sw/bin:/bin:/usr/bin:/usr/local/bin; which ffmpeg')) {
+    variable_set('ffmpeg_wrapper_path', $path);
+    $ffmpeg->path = $path . '/ffmpeg';
+    return TRUE;
+  }
+  $ffmpeg->errors[] = t('FFmpeg Wrapper could not find the path to the FFmpeg binary.
+    You will need to set this by hand at: !link',
+    array('!link' => l('admin/config/media/ffmpeg_wrapper', 'admin/settings/ffmpeg_wrapper'))
+  );
+  return FALSE;
+}

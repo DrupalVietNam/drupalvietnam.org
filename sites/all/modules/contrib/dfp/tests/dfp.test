@@ -1,0 +1,479 @@
+<?php
+
+class dfpBaseTest extends DrupalWebTestCase {
+  /**
+   * Implementation of setUp().
+   */
+  function setUp() {
+    // Enable a couple modules.
+    parent::setUp('ctools', 'dfp', 'taxonomy');
+    menu_rebuild();
+
+    // Create an admin user with all the permissions needed to run tests.
+    $this->admin_user = $this->drupalCreateUser(array('administer DFP', 'administer taxonomy', 'access administration pages', 'administer blocks', 'bypass node access', 'administer nodes', 'edit terms in 1'));
+    $this->drupalLogin($this->admin_user);
+
+    // Add the some global settings needed for dfp ads to work.
+    variable_set('dfp_network_id', '12345');
+    variable_set('dfp_default_slug', $this->randomName(8));
+  }
+
+  /**
+   * Create a simple $edit array to be used on the DFP tag form to create a new
+   * DFP tag object.
+   */
+  function dfpBasicTagEditValues() {
+    $machinename = strtolower($this->randomName(8));
+    $basic_tag = array(
+      'machinename' => $machinename,
+      'slot' => $machinename,
+      'size' => implode(',', $this->dfpGenerateSize(2)),
+      'adunit' => '12345/' . $this->randomName(8),
+      'block' => 1,
+      'settings[slug]' => $this->randomName(32),
+      'settings[adsense_ad_types]' => '',
+      'settings[adsense_channel_ids]' => '',
+      'settings[adsense_colors][background]' => '',
+      'settings[adsense_colors][border]' => '',
+      'settings[adsense_colors][link]' => '',
+      'settings[adsense_colors][text]' => '',
+      'settings[adsense_colors][url]' => '',
+      'targeting[0][target]' => $this->randomName(8),
+      'targeting[0][value]' => $this->randomName(8),
+    );
+
+    return $basic_tag;
+  }
+
+  /**
+   * Generate a random size (or array or sizes) to use when testing tags
+   * formatted as ###x###.
+   */
+  function dfpGenerateSize($count = 1) {
+    $sizes = array('300x250', '300x600', '728x90', '728x10', '160x600', '120x80', '300x100', '50x50', '160x300');
+    shuffle($sizes);
+
+    return $count == 1 ? array_pop($sizes) : array_slice($sizes, 0, min($count, count($sizes)));
+  }
+
+  /**
+   * Creates a basic dfp ad tag.
+   */
+  function createTag($edit = array()) {
+    // Create a new tag.
+    $edit = empty($edit) ? $this->dfpBasicTagEditValues() : $edit;
+    $this->drupalPost('admin/structure/dfp_ads/add', $edit, t('Save'));
+
+    // Load the tag object.
+    $tag = dfp_tag_load($edit['machinename']);
+    $this->assertTrue(is_object($tag) && $tag->machinename = $edit['machinename'], 'The new tag was saved correctly.');
+
+    // Display the new tag.
+    $edit = array();
+    $edit['blocks[dfp_' . $tag->machinename . '][region]'] = 'sidebar_first';
+    $this->drupalPost('admin/structure/block', $edit, t('Save blocks'));
+
+    return $tag;
+  }
+
+  /**
+   * Edit a given tag specified by $machinename with the given values.
+   */
+  function editTag($machinename, &$edit) {
+    // Make sure there is no machinename set when we are editing.
+    if (isset($edit['machinename'])) {
+      unset($edit['machinename']);
+    }
+
+    $this->drupalPost('admin/structure/dfp_ads/list/' . $machinename . '/edit', $edit, t('Save'));
+    $tag = dfp_tag_load($machinename);
+
+    return $tag;
+  }
+}
+
+class dfpDisplayTagTest extends dfpBaseTest {
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('Displaying DFP Tags'),
+      'description' => t('Tests for displaying DFP tags.'),
+      'group' => t('DFP'),
+    );
+  }
+
+  function testDisplayTag() {
+    // Create a simple tag as a block.
+    $tag = $this->createTag();
+
+    // Varify the slot is defined in javascript.
+    $this->assertRaw('googletag.defineSlot("' . $tag->adunit . '", ' . dfp_format_size($tag->size) . ', "dfp-ad-' . $tag->slot . '")', 'The ad slot has been correctly defined in javascript.');
+  }
+
+  function testSlug() {
+    $edit = $this->dfpBasicTagEditValues();
+
+    // Create a tag without a slug, display it and ensure the default slug is
+    // displayed.
+    variable_set('dfp_default_slug', $this->randomName(8));
+    $edit['settings[slug]'] = '';
+    $tag = $this->createTag($edit);
+    $this->assertRaw('<div class="slug">' . dfp_format_slug(variable_get('dfp_default_slug', '')) . '</div>', 'The default slug is correctly used when no slug exists for an individual tag.');
+
+    // Change the slug to <none> and ensure that no slug is displayed.
+    $edit['settings[slug]'] = '<none>';
+    $this->editTag($tag->machinename, $edit);
+    $this->assertNoRaw('<div class="slug">', t('No slug is appearing when "@none" is used.', array('@none' => '<none>')));
+
+    // Specify a slug and check that it shows instead of the default slug.
+    $slug = $this->randomName(8);
+    $edit['settings[slug]'] = $slug;
+    $this->editTag($tag->machinename, $edit);
+    $this->assertRaw('<div class="slug">' . $slug . '</div>', 'The provided slug is correctly displayed with its tag.');
+  }
+
+  function testTargeting() {
+    $edit = $this->dfpBasicTagEditValues();
+
+    // Create a tag with a target with only one value.
+    $tag = $this->createTag($edit);
+    $this->assertRaw('.setTargeting("' . $edit['targeting[0][target]'] . '", "' . $edit['targeting[0][value]'] . '");', 'Targets with a single value are printed correctly in javascript.');
+
+    // Create a tag with a target with multiple values.
+    $values = array($this->randomName(8), $this->randomName(8), $this->randomName(8));
+    $edit['targeting[0][target]'] = $this->randomName(8);
+    $edit['targeting[0][value]'] = implode(', ', $values);
+    $this->editTag($tag->machinename, $edit);
+    $this->assertRaw('.setTargeting("' . $edit['targeting[0][target]'] . '", ["' . implode('","', $values) . '"]);', 'Targets with multiple values are printed correctly in javascript.');
+
+    // Create a tag with a target but no value.
+    $edit['targeting[0][target]'] = $this->randomName(8);
+    $edit['targeting[0][value]'] = '';
+    $this->editTag($tag->machinename, $edit);
+    $this->assertText(t('The value cannot be empty if a target exists.'), 'An error was correctly thrown when a target has no value.');
+
+    // Create a tag with an empty target, but a value.
+    $edit['targeting[0][target]'] = '';
+    $edit['targeting[0][value]'] = $this->randomName(8);
+    $this->editTag($tag->machinename, $edit);
+    $this->assertText(t('The target cannot be empty if a value exists.'), 'An error was correctly thrown when a target is blank, but a value has been entered.');
+
+    // Create a tag with multiple targets.
+    $count = 3;
+    for ($i = 0; $i < $count; $i++) {
+      $edit['targeting[' . $i . '][target]'] = $this->randomName(8);
+      $edit['targeting[' . $i . '][value]'] = $this->randomName(8);
+      $this->drupalPost('admin/structure/dfp_ads/list/' . $tag->machinename . '/edit', $edit, t('Add another target'));
+      $this->editTag($tag->machinename, $edit);
+    }
+
+    for ($i = 0; $i < $count; $i++) {
+      $this->assertRaw('.setTargeting("' . $edit['targeting[' . $i . '][target]'] . '", "' . $edit['targeting[' . $i . '][value]'] . '")', 'Targets ' . $i . ' of ' . $count . ' printed correctly in javascript.');
+    }
+    // Make sure that empty values are ignored.
+    $this->drupalPost('admin/structure/dfp_ads/list/' . $tag->machinename . '/edit', $edit, t('Add another target'));
+    $this->editTag($tag->machinename, $edit);
+    $this->assertNoRaw('.setTargeting(, )', 'Empty targets were correctly ignored when adding.');
+
+    // Test that target can be removed.
+    $edit['targeting[0][target]'] = '';
+    $edit['targeting[0][value]'] = '';
+    $this->editTag($tag->machinename, $edit);
+    $this->assertNoRaw('.setTargeting(, )', 'Empty targets were correctly removed when editing.');
+
+  }
+
+  function testBackfill() {
+    $edit = $this->dfpBasicTagEditValues();
+
+    // Create a tag with backfill settings.
+    $colors = array('background', 'border', 'link', 'text', 'url');
+    $types = array('text', 'image', 'text_image');
+    shuffle($types);
+
+    $edit['settings[adsense_ad_types]'] = array_pop($types);
+    $edit['settings[adsense_channel_ids]'] = $this->randomName(8);
+    foreach ($colors as $color) {
+      $edit['settings[adsense_colors][' . $color . ']'] = strtoupper($this->randomName(8));
+    }
+    $tag = $this->createTag($edit);
+    $this->assertRaw('.set("adsense_ad_types", "' . $edit['settings[adsense_ad_types]'] . '")', 'The adsense type property was set properly.');
+    $this->assertRaw('.set("adsense_channel_ids", "' . $edit['settings[adsense_channel_ids]'] . '")', 'The adsense channel id property was set properly.');
+    foreach ($colors as $color) {
+      $this->assertRaw('.set("adsense_' . $color . '_color", "#' . $edit['settings[adsense_colors][' . $color . ']'] . '")', 'The adsense color property (' . $color . ') was set properly.');
+    }
+  }
+
+}
+
+class dfpAdCategoriesTest extends dfpBaseTest {
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('DFP Ad Categories'),
+      'description' => t('Tests the functionaility of DFP ad categories.'),
+      'group' => t('DFP'),
+    );
+  }
+
+  function testEnableDisableAdCategories() {
+    // Check that enabling DFP Ad Categories for the "tags" vocabulary works.
+    $edit = array(
+      'dfp_enable_ad_categories' => 1,
+      'dfp_enable_ad_categories_bundles[tags]' => 'tags',
+    );
+    $this->drupalPost('admin/structure/dfp_ads/settings', $edit, t('Save configuration'));
+    $this->drupalGet('admin/structure/taxonomy/tags/add');
+    $this->assertFieldByName('field_dfp_ad_categories[und]');
+
+    // Check that disabling DFP Ad Categories vocabulary works even when a
+    // bundle is selected.
+    $edit = array(
+      'dfp_enable_ad_categories' => 0,
+    );
+    $this->drupalPost('admin/structure/dfp_ads/settings', $edit, t('Save configuration'));
+    $this->drupalGet('admin/structure/taxonomy/tags/add');
+    $this->assertNoFieldByName('field_dfp_ad_categories[und]');
+
+    // Check that disabling DFP Ad Categories on a specific vocabulary works.
+    // For this test to be valid, we first need to reenable DFP Ad Categories.
+    $edit = array(
+      'dfp_enable_ad_categories' => 1,
+      'dfp_enable_ad_categories_bundles[tags]' => 'tags',
+    );
+    $this->drupalPost('admin/structure/dfp_ads/settings', $edit, t('Save configuration'));
+    $this->drupalGet('admin/structure/taxonomy/tags/add');
+    $edit = array(
+      'dfp_enable_ad_categories_bundles[tags]' => 0,
+    );
+    $this->drupalPost('admin/structure/dfp_ads/settings', $edit, t('Save configuration'));
+    $this->drupalGet('admin/structure/taxonomy/tags/add');
+    $this->assertNoFieldByName('field_dfp_ad_categories[und]');
+  }
+
+  // Test that DFP Catetories are displayed properly.
+  function testDisplayAdCategories() {
+    // Turn on DFP ad categories for the "tags" vocabulary.
+    $edit = array(
+      'dfp_enable_ad_categories' => 1,
+      'dfp_enable_ad_categories_bundles[tags]' => 'tags',
+    );
+    $this->drupalPost('admin/structure/dfp_ads/settings', $edit, t('Save configuration'));
+
+    // Create a new DFP Ad Category term.
+    $dfp_category = $this->randomName(8); // tid == 1
+    $edit = array(
+      'name' => $dfp_category,
+    );
+    $this->drupalPost('admin/structure/taxonomy/dfp_ad_categories/add', $edit, t('Save'));
+
+    // Create a new "Article" node with two tags.
+    $control_tag = $this->randomName(8); // tid == 2
+    $test_tag = $this->randomName(8); // tid == 3
+    $edit = array(
+      'title' => $this->randomName(8),
+      'field_tags[und]' => $control_tag . ', ' . $test_tag,
+    );
+    $this->drupalPost('node/add/article', $edit, t('Save'));
+
+    // Edit one the new tags and tag it with a DFP Ad Category.
+    $edit = array(
+      'field_dfp_ad_categories[und]' => 1,
+    );
+    $this->drupalPost('taxonomy/term/3/edit', $edit, t('Save'));
+
+    // Create a DFP ad slot that targets the [dfp_tag:ad_categories] token.
+    $edit = $this->dfpBasicTagEditValues();
+
+    // Create a tag that uses the slot token in a target.
+    $edit['slot'] = $this->randomName(8);
+    $edit['targeting[0][target]'] = 'categories';
+    $edit['targeting[0][value]'] = '[dfp_tag:ad_categories]';
+    $tag = $this->createTag($edit);
+
+    // Check that when we are on the node page, that the DFP Ad Category is used
+    // and that the control tag is also displayed.
+    $this->drupalGet('node/1');
+    $this->assertRaw('.setTargeting("categories", ["' . $control_tag . '","' . $dfp_category . '"])', 'DFP Ad Categories work correctly.');
+
+    // Check that when we are on the term page for one of DFP Ad Categories that
+    // it is correctly included.
+    $this->drupalGet('taxonomy/term/1');
+    $this->assertRaw('.setTargeting("categories", "' . $dfp_category . '")', 'DFP Ad Categories appear on its own term page correctly.');
+
+    // Check that when we are on a term page for a term with a coresponding
+    // DFP Ad Categories the DFP Ad Category is included.
+    $this->drupalGet('taxonomy/term/3');
+    $this->assertRaw('.setTargeting("categories", "' . $dfp_category . '")', 'DFP Ad Categories appear on term pages for terms that have a DFP Ad Category correctly.');
+
+  }
+}
+
+class dfpTokensTest extends dfpBaseTest {
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('DFP Tokens'),
+      'description' => t('Tests for custom tokens created by the DFP module.'),
+      'group' => t('DFP'),
+    );
+  }
+
+  function testSlotToken() {
+    $edit = $this->dfpBasicTagEditValues();
+
+    // Create a tag that uses the slot token in a target.
+    $test_slot = $this->randomName(8);
+    $edit['slot'] = $test_slot;
+    $edit['targeting[0][target]'] = 'slot';
+    $edit['targeting[0][value]'] = '[dfp_tag:slot]';
+    $tag = $this->createTag($edit);
+    $this->assertRaw('.setTargeting("slot", "' . $test_slot . '");', 'The "slot" token works correctly.');
+  }
+
+  function testNetworkIDToken() {
+    $edit = $this->dfpBasicTagEditValues();
+
+    // Create a tag that uses the networkid token in a target.
+    $test_network_id = $this->randomName(8);
+    variable_set('dfp_network_id', $test_network_id);
+    $edit['targeting[0][target]'] = 'network id';
+    $edit['targeting[0][value]'] = '[dfp_tag:network_id]';
+    $tag = $this->createTag($edit);
+    $this->assertRaw('.setTargeting("network id", "' . $test_network_id . '");', 'The "network id" token works correctly.');
+  }
+
+  function testUrlPartsToken() {
+    // Create a tag that uses the url parts token in a target.
+    $tag = $this->createTag();
+    $url = 'admin/structure/dfp_ads';
+    $url_parts = explode('/', $url);
+
+    $max_parts_to_test = 3;
+    for ($i = 1; $i <= $max_parts_to_test; $i++) {
+      $edit['targeting[0][target]'] = 'url parts';
+      $edit['targeting[0][value]'] = '[dfp_tag:url_parts:' . $i . ']';
+      $this->editTag($tag->machinename, $edit);
+
+      $this->drupalGet($url);
+      $replacement = implode('/', array_slice($url_parts, 0, $i));
+      $this->assertRaw('.setTargeting("url parts", "' . $replacement . '")', 'The "url parts" token works correctly with ' . $i . ' parts.');
+    }
+  }
+
+}
+
+class dfpGlobalsTest extends dfpBaseTest {
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('Gloabl DFP Tag Settings'),
+      'description' => t('Tests for the settings defined in admin/structure/dfp_ads/settings.'),
+      'group' => t('DFP'),
+    );
+  }
+
+  function testGlobalSettingsOn(){
+    $injected_js = $this->randomName(32);
+    $target = array(
+      'target' => $this->randomName(8),
+      'value' => $this->randomName(8),
+    );
+
+    variable_set('dfp_async_rendering', '1');
+    variable_set('dfp_single_request', '1');
+    variable_set('dfp_collapse_empty_divs', '1');
+    variable_set('dfp_injected_js', $injected_js);
+    variable_set('dfp_targeting', array($target));
+    $this->drupalGet('/');
+    $this->assertRaw('googletag.pubads().enableAsyncRendering();', 'Asyncronous rendering is turned on.');
+    $this->assertRaw('googletag.pubads().enableSingleRequest();', 'Single request is turned on.');
+    $this->assertRaw('googletag.pubads().collapseEmptyDivs();', 'Collapse empty divs is turned on.');
+    $this->assertRaw($injected_js, 'Injected javascript correctly appears on the page.');
+    $this->assertRaw('googletag.pubads().setTargeting("' . $target['target'] . '", "' . $target['value'] . '");', 'Global targetting values appear correclty in javascript.');
+  }
+
+  function testGlobalSettingsOff(){
+    variable_set('dfp_async_rendering', '0');
+    variable_set('dfp_single_request', '0');
+    variable_set('dfp_collapse_empty_divs', '0');
+    $this->drupalGet('/');
+    $this->assertNoRaw('googletag.pubads().enableAsyncRendering();', 'Asyncronous rendering is turned off.');
+    $this->assertNoRaw('googletag.pubads().enableSingleRequest();', 'Single request is turned off.');
+    $this->assertNoRaw('googletag.pubads().collapseEmptyDivs();', 'Collapse empty divs is turned off.');
+  }
+
+}
+
+class dfpAdTestTest extends dfpBaseTest {
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('Displaying AdTest DFP Tags'),
+      'description' => t('Tests for displaying overridden DFP tags for ad test purposes.'),
+      'group' => t('DFP'),
+    );
+  }
+
+  function testTestPage() {
+    $tag = $this->createTag();
+
+    $override = $this->randomName(8);
+    $this->drupalGet('admin/structure/dfp_ads/test_page', array('query' => array('adunit_override' => $override)));
+    $this->assertRaw('googletag.defineSlot("' . $override . '"', 'The Ad Unit Name was properly overridden on the Ad Test Page.');
+  }
+
+  function testQueryString() {
+    $tag = $this->createTag();
+
+    $override = $this->randomName(8);
+    variable_set('dfp_adtest_adunit', $override);
+    $this->drupalGet('admin/structure/dfp_ads/test_page', array('query' => array('adtest' => 'true')));
+    $this->assertRaw('googletag.defineSlot("' . $override . '"', 'The Ad Unit Name was properly overridden using the adtest query string.');
+  }
+
+}
+
+class DFPUnitTest extends DrupalUnitTestCase {
+  protected $profile = 'testing';
+
+  /**
+   * Implementation of setUp().
+   */
+  function setUp() {
+    // Enable a couple modules.
+    drupal_load('module', 'dfp');
+    parent::setUp();
+  }
+
+  /**
+   * Implements getInfo().
+   */
+  public static function getInfo() {
+    return array(
+      'name' => t('DFP Unit Tests'),
+      'description' => t('Checks the integrity of certain DFP functions.'),
+      'group' => t('DFP'),
+    );
+  }
+
+  function testDFPformatSize() {
+    $sizes = '300x250';
+    $expected_result = '[300, 250]';
+
+    $this->assertTrue(dfp_format_size($sizes) == $expected_result, 'The dfp_format_sizes function correctly handles an single size.');
+    $sizes = '300x250,728x90';
+    $expected_result = '[[300, 250], [728, 90]]';
+    $this->assertTrue(dfp_format_size($sizes) == $expected_result, 'The dfp_format_sizes function correctly handles multiple sizes.');
+  }
+}

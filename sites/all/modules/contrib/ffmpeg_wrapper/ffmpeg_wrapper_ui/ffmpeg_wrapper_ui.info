@@ -1,0 +1,10 @@
+name = FFmpeg Wrapper UI
+description = FFmpeg Wrapper user interface
+core = 7.x
+dependencies[] = ffmpeg_wrapper
+; Information added by drupal.org packaging script on 2012-03-10
+version = "7.x-1.0-alpha2"
+core = "7.x"
+project = "ffmpeg_wrapper"
+datestamp = "1331406352"
+

@@ -1,0 +1,1082 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * Provides a user interface to FFmpeg Wrapper
+ */
+
+
+/* ************************************************ */
+/* DRUPAL HOOKS                                     */
+/* ************************************************ */
+
+/**
+ * Implements hook_menu().
+ */
+function ffmpeg_wrapper_ui_menu() {
+  $items = array();
+  // A file conversion test form
+  $items['admin/config/media/ffmpeg_wrapper/convert'] = array (
+    'title' => 'Test file conversion',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ffmpeg_wrapper_ui_admin_convert_form'),
+    'access arguments' => array('transcode file'),
+    'type' => MENU_LOCAL_TASK,
+  );
+  // Provides the transcoding status via AJAX
+  $items['ffmpeg_wrapper/transcode/status'] = array (
+    'title' => 'Test Convert File',
+    'page callback' => 'ffmpeg_wrapper_ui_transcoding_status',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_theme().
+ *
+ * @return array
+ */
+function ffmpeg_wrapper_ui_theme() {
+  return array(
+    'ffmpeg_wrapper_ui_file_data' => array(
+      'arguments' => array('filepath' => NULL),
+      'file' => 'ffmpeg_wrapper_ui.theme.inc'
+    )
+  );
+}
+
+
+/**
+ * Allow files to be transcoded from uploaded file form
+ *
+ * @TODO THIS ALL NEEDS TO BE UPDATED TO D7. AND RETHOUGHT. A BUNCH.
+ *
+ * @param string $form_id
+ * @param array $form
+ */
+function ffmpeg_wrapper_ui_form_alter(&$form, $form_state, $form_id) {
+  // If user does not have rights to test with ffmpeg, nothing to do
+  if (! user_access('administer ffmpeg wrapper')) {
+    return;
+  }
+
+  // Are there attached files?
+  if (isset($form['attachments']) && $files = $form['attachments']['wrapper']['files']) {
+    foreach ($files as $fid => $file) {
+      // Check to make sure this is a file array and if this file is decodeable by ffmpeg
+      // We are dealing with a form element, so we have to make sure that this is the part that we want
+      if (is_array($file)) {
+        // Can ffmpeg decode this?
+        if (ffmpeg_wrapper_can_decode($file['filepath']['#value'])) {
+          $nid = $form['#node']->nid;
+          // create the link for test conversion
+          $link = '<br />'. l(t('Test convert file with FFmpeg'), "node/$nid/ffmpeg/$fid", array(
+            'attributes' => array(
+              'class' => 'ffmpeg_convert',
+              'nid' => $nid,
+              'fid' => $fid,
+              'filepath' => $file['filepath']['#value'],
+             )));
+          // Alter the description of this item to include the link
+          $form['attachments']['wrapper']['files'][$fid]['description']['#description'] .= $link;
+          // Keep track of the clicked file options
+          $options[$file['filepath']['#value']] = $file['filepath']['#value'];
+        }
+      }
+    }
+  }
+
+  if (module_exists('filefield')) {
+    $links = array();
+    // Find all the file fields
+    foreach (element_children($form) as $field_name) {
+      foreach(element_children($form[$field_name]) as $element_id) {
+        // Find the fields that are file fields
+        if ($form[$field_name][$element_id]['#type'] == 'filefield_widget') {
+          if ($filepath = $form[$field_name][$element_id]['#default_value']['filepath']) {
+            // Can ffmpeg decode this?
+            if (ffmpeg_wrapper_can_decode($filepath)) {
+              $nid = $form['#node']->nid;
+              $fid = $form[$field_name][$element_id]['#default_value']['fid'];
+              // create the link for test conversion
+              $links[] = l(t('Transcode !file with FFmpeg', array('!file' => basename($filepath))), "node/$nid/ffmpeg/$fid", array(
+                'attributes' => array(
+                  'class' => 'ffmpeg_convert',
+                  'nid' => $nid,
+                  'fid' => $fid,
+                  'filepath' => $file['filepath']['#value'],
+              )));
+            }
+          }
+        }
+      }
+      if ($links) {
+        $form[$field_name]['#suffix'] = implode('<br />', $links);
+        unset($links);
+      }
+    }
+  }
+}
+
+
+/**
+ * Implementation of hook_permission().
+ */
+function ffmpeg_wrapper_ui_perm() {
+  return array(
+    'transcode file' => array(
+      'title' => t('Transcode files'),
+      'description' => t('Allows users to transcode files'),
+    )
+  );
+}
+
+
+/* ************************************************** */
+/* Internal Functions                                 */
+/* ************************************************** */
+
+/**
+ * Custom access function which checks to see
+ * if the user has to edit and transcode this file
+ * @param $node
+ *   object, drupal node
+ * @return boolean
+ */
+function ffmpeg_wrapper_ui_access_check($node, $fid) {
+  // Does the user have rights to transcode this?
+  if (! user_access('transcode file')) {
+    return FALSE;
+  }
+  // Does the user have rights to edit this node?
+  if (! node_access('update', $node)) {
+    return FALSE;
+  }
+  // Check to see if this file is on this node
+  if (ffmpeg_wrapper_ui_find_fid($node, $fid)) {
+    return TRUE;
+  }
+  else {
+    drupal_set_message(t('The requested file was not attached to this node'), 'error');
+  }
+
+  return FALSE;
+}
+
+/* ************************************************** */
+/* Configuration forms                                */
+/* ************************************************** */
+
+
+/**
+ * All a user to transcode a file attached to a node
+ *
+ * @param object $node
+ *   Drupal node object
+ * @param int $fid
+ *   Drupal file id to operate on
+ * @return Drupal form array
+ */
+function ffmpeg_wrapper_ui_node_convert_form($form_state, $node, $fid) {
+  $form = array();
+  // Load our file
+  $file = db_fetch_object(db_query('SELECT * FROM {files} WHERE fid = %d', $fid));
+  // Save the file
+  $form['node'] = array(
+    '#type' => 'value',
+    '#value' => $node,
+  );
+  $form['source'] = array(
+    '#type' => 'value',
+    '#value' => $file->filepath,
+  );
+  $form_state['storage']['file'] = $file;
+  ffmpeg_wrapper_ui_transcode_form($form, $form_state, $file);
+  return $form;
+}
+
+
+/**
+ * Allow admin to upload a file to test transcoding with
+ */
+function ffmpeg_wrapper_ui_admin_convert_form($form, &$form_state) {
+  // If the user has not selected a file allow them to upload them
+  if (! isset($form_state['storage']['file'])) {
+   $form['new']['upload'] = array(
+      '#type' => 'file',
+      '#title' => t('Convert a file'),
+      '#size' => 40,
+      '#description' => t('Select and upload a file to test conversion. The following
+        file types can be converted: !types', array(
+          '!types' => implode(' ', array_keys(ffmpeg_wrapper_get_formats())))
+        )
+    );
+    $form['#attributes']['enctype'] = 'multipart/form-data';
+    $form['submit'] = array(
+      '#type' => 'submit',
+      '#value' => 'Upload'
+    );
+    return $form;
+  }
+  // Get the full form once we have a file
+  ffmpeg_wrapper_ui_transcode_form($form, $form_state, $form_state['storage']['file']);
+  return $form;
+}
+
+
+/**
+ * Default form for transcoding
+ *
+ * @param object $file
+ *   Drupal file object
+ */
+function ffmpeg_wrapper_ui_transcode_form(&$form, &$form_state, $file) {
+  // Container for ajax data
+  $form['converted_container'] = array(
+    '#prefix' => '<div id="transcoded">',
+    '#suffix' => '</div>'
+  );
+
+  // Display any conversion data above the rest of the form data
+  ffmpeg_wrapper_ui_node_action_form($form, $form_state, $file);
+
+  $form['source_data'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Source File Details'),
+    '#collapsible' => TRUE,
+    '#collapsed' => isset($form_state['storage']['ffmpeg_object']) ? TRUE : FALSE,
+  );
+
+  $form['source_data']['display'] = array(
+    '#markup' => theme('ffmpeg_wrapper_ui_file_data', array('filepath' => drupal_realpath($file->uri))),
+  );
+
+  // Get the FFmpeg configuration form
+  $form += ffmpeg_wrapper_ui_configuration_form($form_state['values']);
+
+  // Change the title of the ffmpeg form
+  $form['ffmpeg_wrapper']['#title'] = t('Transcode file using these settings');
+
+  // Add the submit button inside the fieldset
+  $form['ffmpeg_wrapper']['submit'] = array(
+    '#type' => 'button',
+    '#value' => t('Transcode'),
+    '#name' => 'transcode',
+    // This is a hack to ensure that the progress bar is wide enough to show progress
+    '#prefix' => '<style> .ajax-progress-bar {width: 85%; !important float: right; margin-left: 130px; margin-top: -40px; } </style>',
+    '#ajax' => array(
+      'callback' => 'ffmpeg_wrapper_ui_transcoding_ajax',
+      'wrapper' => 'transcoded',
+      'effect' => 'slide',
+      'progress' => array(
+        'type' => 'bar',
+        'url' => base_path() . 'ffmpeg_wrapper/transcode/status/' . $file->fid
+      ),
+    )
+  );
+  return $form;
+}
+
+
+/**
+ * Display the attach/download links once there is a transcoded file
+ *
+ * @param array $form
+ * @param array $form_state
+ * @return array
+ */
+function ffmpeg_wrapper_ui_node_action_form(&$form, &$form_state) {
+  // Should we display the form?
+  if ($form_state['clicked_button']['#name'] == 'transcode') {
+    // Should we display transcoded file data?
+    $file_is_present = TRUE;
+    // Get the file path for the file to be converted
+    $form_state['values']['source'] = ffmpeg_wrapper_uri_to_path(($form_state['storage']['file']->uri));
+    // Convert the file
+    $ffmpeg_object = ffmpeg_wrapper_convert_file($form_state['values'], $form_state['storage']['file']);
+    // Store the converted file
+    $form_state['storage']['ffmpeg_object'] = $ffmpeg_object;
+
+    // Display the the file data
+    if ($ffmpeg_object->errors) {
+      drupal_set_message(t('There were errors during the conversion process'), 'error');
+      $form['converted_container']['converted'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Errors in conversion'),
+        '#description' => t('There were errors during the conversion process'),
+      );
+      // Build the errors
+      $errors = $ffmpeg_object->errors;
+      $errors[] = t('Command: !command', array('!command' => $ffmpeg_object->command));
+      $errors = theme('item_list', array('items' => $errors));
+      $form['converted_container']['converted']['error'] = array(
+        '#markup' => t('Errors found: !errors', array('!errors' => $errors))
+      );
+    }
+
+    // Conversion was successful
+    else {
+      drupal_set_message(t('Your file was successfully transcoded!'));
+      $form['converted_container']['converted'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Conversion data'),
+      );
+      // Display the transcoding status
+      $form['converted_container']['converted']['display'] = array(
+        '#markup' => t('Output file is: !file', array('!file' => basename($ffmpeg_object->output_file))),
+      );
+      // Output file details
+      $form['converted_container']['converted']['data'] = array(
+        '#markup' => theme('ffmpeg_wrapper_ui_file_data', array('filepath' => $ffmpeg_object->output_file)),
+      );
+      // Download this file
+      $form['converted_container']['converted']['download'] = array(
+        '#value' => t('Download'),
+        '#type' => 'submit',
+        '#submit' => array('ffmpeg_wrapper_ui_download_file'),
+      );
+      // If a node was passed in, format the value into the autocomplete
+      if (isset($form['node']['#value'])) {
+        $node_title = checkplain($form['node']['#value']->title) . '  [nid:' . $form['node']['#value']->nid . ']';
+      }
+      $form['converted_container']['converted']['ffmpeg_output'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('FFmpeg Output'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+      );
+      $form['converted_container']['converted']['ffmpeg_output']['ffmpeg_display'] = array(
+        '#markup' =>
+          '<pre>' . $ffmpeg_object->command . '</pre>' .
+          '<pre>' . check_markup($ffmpeg_object->output) . '</pre>'
+      );
+        //return;
+      watchdog('ffmpeg', '<pre>' . print_r($ffmpeg_object, true) . '</pre>');
+    }
+  }
+}
+
+
+/**
+ * Generic ffmpeg_wrapper conversion form
+ *
+ * Build a generic form for any module to implementm ffmpeg configuration.
+ * This will give any module the ajax form configuration updates.
+ * Validation and submission need to be handled by the calling module - this
+ * only builds the form call this form inside your form function.
+ *
+ * @param array $configuration
+ *   An array of configuration data - could be $form_values.
+ * @return array
+ *   A Drupal form array.
+ */
+function ffmpeg_wrapper_ui_configuration_form($configuration = array(), $form_prefix = '' ) {
+  $form['ffmpeg_wrapper'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('FFmpeg video conversion settings'),
+    '#collapsed' => FALSE,
+    '#element_validate' => array('ffmpeg_wrapper_ui_configuration_form_validate'),
+  );
+
+  // Build the output formats
+  $form['ffmpeg_wrapper']['output_type'] = array(
+    '#type' => 'select',
+    '#title' => t('Output format'),
+    '#options' => _ffmpeg_wrapper_ui_supported_formats(),
+    '#default_value' => ! empty($configuration['ffmpeg_output_type']) ? $configuration['ffmpeg_output_type'] : 'flv',
+    '#description' => t('Select the output format. Note, some formats may require
+      setting audio or video codecs.'),
+  );
+
+  // ---------------------------------------------
+  // Audio options
+  $form['ffmpeg_wrapper']['audio'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Audio conversion settings'),
+    '#collapsed' => (
+      ! empty($configuration['audio_bitrate']) ||
+      ! empty($configuration['audio_samplerate']) ||
+      ! empty($configuration['audio_codec'])
+    ) ? FALSE : TRUE,
+    '#collapsible' => TRUE,
+  );
+
+  $options = array(0 => t('Default'));
+  $options += ffmpeg_wrapper_ui_output_rates('ab');
+  $form['ffmpeg_wrapper']['audio']['audio_bitrate'] = array(
+    '#type' => 'select',
+    '#title' => t('Audio bit rate'),
+    '#options' => $options,
+    '#default_value' => ! empty($configuration['audio_bitrate']) ? $configuration['audio_bitrate'] :  0,
+    '#description' => t("Audio bit rate for conversion file."),
+  );
+
+  $options = array(0 => t('Default'));
+  $options += ffmpeg_wrapper_ui_output_rates('ar');
+  $form['ffmpeg_wrapper']['audio']['audio_samplerate'] = array(
+    '#type' => 'select',
+    '#title' => t('Audio sample rate'),
+    '#options' => $options,
+    '#default_value' => ! empty($configuration['audio_samplerate']) ? $configuration['audio_samplerate'] : 0,
+    '#description' => t('Audio sample rate for conversion.'),
+  );
+
+  // Audio codec
+  $options = array(0 => t('Default'));
+  $options += _ffmpeg_wrapper_ui_list_supported_codecs('Audio', 'encode');
+  $form['ffmpeg_wrapper']['audio']['audio_codec'] = array(
+    '#type' => 'select',
+    '#title' => t('Audio codec'),
+    '#options' => $options,
+    '#default_value' => ! empty($configuration['audio_codec']) ? $configuration['audio_codec'] : 0 ,
+    '#description' => t('Select the codec for the output format. Please note,
+      you may need to pick an appropriate video codec if you use a codec other
+      than the default.'),
+  );
+
+  // -------------------------------------------
+  // Video options
+  $form['ffmpeg_wrapper']['video'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Video conversion settings'),
+    '#collapsed' => (
+      ! empty($configuration['video_size']) ||
+      ! empty($configuration['video_size_other']) ||
+      ! empty($configuration['video_fps']) ||
+      ! empty($configuration['video_br']) ||
+      ! empty($configuration['video_br_other']) ||
+      ! empty($configuration['video_vcodec']) ||
+      ! empty($configuration['video_truncate_time'])
+    ) ? FALSE : TRUE,
+    '#collapsible' => TRUE,
+  );
+  // video frame size
+  $frame_size = ffmpeg_wrapper_ui_frame_sizes();
+  $form['ffmpeg_wrapper']['video']['video_size'] = array(
+    '#type' => 'select',
+    '#title' => t('Video frame size'),
+    '#options' => $frame_size,
+    '#default_value' => ! empty($configuration['video_size']) ? $configuration['video_size'] : '',
+    '#description' => t('Dimensions of the converted video. Use the
+      <em>Other</em> option to define your custom size.'),
+    '#prefix' => '<div class="ffmpeg-wrapper-size">',
+    '#suffix' => '</div>',
+  );
+  $form['ffmpeg_wrapper']['video']['video_size_other'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Video frame (Other) size'),
+    '#default_value' => ! empty($configuration['video_size_other']) ? $configuration['video_size_other'] : '',
+    '#description' => t('Dimensions of the converted video, of the format 600x400.'),
+    '#prefix' => '<div class="ffmpeg-wrapper-size-other">',
+    '#suffix' => '</div>',
+    '#validate' => array('ffmpeg_wrapper_configuration_form_frame_size_validate' => array('video_size_other')),
+    '#size' => 12,
+    '#states' => array(
+      'visible' => array(   // action to take.
+        ':input[name=video_size]' => array('value' => 'other'),
+      ),
+    ),
+  );
+
+  $options = array(0 => t('Source fps'));
+  $options += ffmpeg_wrapper_ui_output_rates('fps');
+  $form['ffmpeg_wrapper']['video']['video_fps'] = array(
+    '#type' => 'select',
+    '#title' => t('Video fps rate'),
+    '#options' => $options,
+    '#default_value' => ! empty($configuration['video_fps']) ? $configuration['video_fps'] : 0,
+    '#description' => t('Sets the frames per second of the converted video.'),
+  );
+
+  $options = array(0 => t('Source bitrate'));
+  $options += ffmpeg_wrapper_ui_output_rates('br');
+  $options['other'] = t('Other');
+  $form['ffmpeg_wrapper']['video']['video_bitrate'] = array(
+    '#type' => 'select',
+    '#title' => t('Video bit rate'),
+    '#options' => $options,
+    '#default_value' => ! empty($configuration['video_bitrate']) ? $configuration['video_bitrate'] : 0,
+    '#description' => t('Target the output video to this bit rate.'),
+   );
+   $form['ffmpeg_wrapper']['video']['video_bitrate_other'] = array(
+     '#type' => 'textfield',
+     '#title' => t('Video bit rate (Other)'),
+     '#default_value' => ! empty($configuration['video_bitrate_other']) ? $configuration['video_bitrate_other'] : '',
+     '#description' => t('Target bitrate for output video, in the format
+       <em>1000</em>. This should be numbers only'),
+     '#size' => 12,
+     '#states' => array(
+      'visible' => array(   // action to take.
+        ':input[name=video_bitrate]' => array('value' => 'other'),
+      ),
+    ),
+  );
+
+  $video_codecs = array(0 => t('Default'));
+  $video_codecs += _ffmpeg_wrapper_ui_list_supported_codecs('Video', 'encode');
+  $form['ffmpeg_wrapper']['video']['video_codec'] = array(
+    '#type' => 'select',
+    '#title' => t('Video codec'),
+    '#options' => $video_codecs,
+    '#default_value' => ! empty($configuration['video_codec']) ? $configuration['video_codec'] : 0,
+    '#description' => t('Select the codec for the output format. Please note,
+      you may need to pick an appropriate audio codec for using a codec other
+      than the default.'),
+  );
+
+  $times = array(0 => t('Use full length'), 30 => t('30 seconds'), 60 => t('1 minute'), 120 => t('2 minutes'), 300 => t('5 minutes'));
+  $form['ffmpeg_wrapper']['video']['video_truncate_time'] = array(
+    '#type' => 'select',
+    '#title' => t('Truncate video length'),
+    '#options' => $times,
+    '#default_value' => ! empty($configuration['video_truncate_time']) ? $configuration['video_truncate_time'] : 0,
+    '#description' => t('You can truncate the length of the video to provide
+      teasers of the full source material.'),
+  );
+
+  // FFmpeg custom command
+  $form['ffmpeg_wrapper']['custom'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Custom FFmpeg command'),
+    '#collapsed' => ! empty($configuration['video_custom']) ? FALSE : TRUE,
+    '#collapsible' => TRUE,
+  );
+  $form['ffmpeg_wrapper']['custom']['use_custom_command'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Use custom FFmpeg command'),
+    '#description' => t('Use the custom FFmpeg command in the textfield below.'),
+    '#default_value' => ! empty($configuration['custom']) ? $configuration['custom'] : '',
+  );
+  $form['ffmpeg_wrapper']['custom']['custom_command'] = array(
+    '#type' => 'textarea',
+    '#rows' => 1,
+    '#title' => t('Custom FFmpeg command'),
+    '#description' => t('You can craft your own FFmpeg command. Please see the
+      FFmpeg documentation for correct syntax. The command will replace
+      <em>%in_file</em>, <em>%out_file</em>, <em>%file_name</em> with the
+      generated files. Please note, you can not use | or > in your commands.'),
+    '#default_value' => ! empty($configuration['custom_command']) ? $configuration['custom_command'] : '-i %in_file %out_file',
+  );
+
+  return $form;
+}
+
+
+/**
+ * Validates the standard configuration form
+ *
+ * @param $form
+ * @param $form_state
+ */
+function ffmpeg_wrapper_ui_configuration_form_validate($element, &$form_state) {
+  // Should we validate the video frame size?
+  if (! empty($form_state['values']['video_size']) && $form_state['values']['video_size'] == 'other') {
+    $pattern = "/^[0-9]*x[0-9]*$/";
+    if (! preg_match($pattern, $form_state['values']['video_size_other'], $matches)) {
+      form_error($element['video']['video_size_other'], t('The frame size that
+        you entered is not in the correct format. Enter your frame size in the
+        form: <em>640x480</em>.'));
+    }
+  }
+
+  // Should we validate the video bitrate?
+  if (! empty($form_state['values']['video_bitrate']) && $form_state['values']['video_bitrate'] == 'other') {
+    $pattern = "/^.[0-9]*$/";
+    if (! preg_match($pattern, $form_state['values']['video_bitrate_other'], $matches)) {
+      form_error($element['video']['video_bitrate_other'], t('You entered your
+        bitrate in the wrong format. Please enter your value as numbers only.'));
+    }
+  }
+
+  // Only validate the command if the custom command is selected
+  // @TODO probably should consider other validation here
+  if (! empty($form_state['values']['custom'])) {
+    // Check for | and > characters which pose an increased security risk
+    if (preg_match('/(\||>|<)/', $element['#value'])) {
+      form_error($element, t('The following characters: <strong> | > < </strong>  are not allowed in your
+        custom command'));
+    }
+  }
+}
+
+
+/**
+ * Ajax callback for the transcoding process
+ *
+ * @return array
+ */
+function ffmpeg_wrapper_ui_transcoding_ajax($form, $form_state) {
+  return $form['converted_container'];
+}
+
+
+
+/**
+ * Output dimentions form settings.
+ *
+ * @return
+ *   An array of frame sizes.
+ */
+function ffmpeg_wrapper_ui_frame_sizes(){
+  // @TODO integrate the drupal image sizes here
+  // module_load_include('module', 'image', 'image');
+  // module_load_include('inc', 'image', 'image.admin');
+
+  $frame_sizes = array(
+    '0' => t('Source dimensions'),
+    '128x96' => '128x96',
+    '176x144' => '176x144',
+    '320x240' => '320x240',
+    '352x288' => '352x288',
+    '512x386' => '512x386',
+    '704x576' => '704x576'
+  );
+  $frame_sizes['other'] = t('Other');
+  return $frame_sizes;
+}
+
+
+/**
+ * Build the output rates for each type of bit rate that ffmpeg offers.
+ *
+ * @param string $type
+ *   Type of bit rate: "ab", "ar", "fps" or "br".
+ * @return
+ *   Array of key values.
+ */
+function ffmpeg_wrapper_ui_output_rates($type) {
+  static $rates;
+  if (! $rates) {
+    $rates = array(
+     'ab'  => array('16k' => '16k', '22k' => '22k', '32k' => '32k', '64k' => '64k', '96k' => '96k', '128k' => '128k', '192k' => '192k', '256k' => '256k'),
+     'ar' => array('11025' => t('11khz'), '22050' => t('22khz'), '32000' => t('32khz'), '44100' => t('44.1khz') ),
+     'fps' => array(10 => 10, 15 => 15, 20 => 20, 25 => 25, 29.97 => 29.97),
+     'br' => array('50k' => t('50kps'), '100k' => t('100kps'), '150k' => t('150kps'), '200k' => t('200kps'), '250k' => t('250kps'), '300k' => t('300kps'), '500k' => t('500kps'), '750k' => t('750kps'), '1000k' => t('1000kps'), '1250k' => t('1250kps'), '1500k' => t('1500kps'), '2000k' => t('2000kps')),
+    );
+  }
+  return $rates[$type];
+}
+
+
+
+
+
+function ffmpeg_wrapper_ajax_form_return($ffmpeg_object) {
+  $form = array();
+  if ($ffmpeg_object->errors) {
+    drupal_set_message(t('There were errors during the conversion process'), 'error');
+    $form['converted'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Errors in conversion'),
+      '#description' => t('There were errors during the conversion process'),
+    );
+    // Build the errors
+    $errors = $ffmpeg_object->errors;
+    $errors[] = t('Command: !command', array('!command' => $ffmpeg_object->command));
+    $errors = theme('item_list', array('items' => $errors));
+    $form['converted']['error'] = array(
+      '#markup' => t('Errors found: !errors', array('!errors' => $errors))
+    );
+  }
+
+  // Conversion was successful
+  else {
+    $form['converted']['data_params'] = array(
+      '#markup' => '<pre>' . print_r($ffmpeg_object->params, true) . '</pre>',
+    );
+
+    // Display the transcoding status
+    $form['converted']['display'] = array(
+      '#markup' => t('Output file is: !file', array('!file' => basename($ffmpeg_object->output_file))),
+    );
+    // Output file details
+    $form['converted']['data'] = array(
+      '#markup' => theme('ffmpeg_wrapper_ui_file_data', array('filepath' => $ffmpeg_object->output_file)),
+    );
+    // Download this file
+    $form['converted']['download'] = array(
+      '#value' => t('Download'),
+      '#type' => 'submit',
+      '#submit' => array('ffmpeg_wrapper_ui_download_file'),
+    );
+    // If a node was passed in, format the value into the autocomplete
+    if (isset($form['node']['#value'])) {
+      $node_title = checkplain($form['node']['#value']->title) . '  [nid:' . $form['node']['#value']->nid . ']';
+    }
+  }
+  $form['converted']['ffmpeg_output'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('FFmpeg Output'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+  $form['converted']['ffmpeg_output']['ffmpeg_display'] = array(
+    '#markup' => '<pre>' . print_r($ffmpeg->params, true) . '</pre>' .
+      '<code>' . $ffmpeg_object->command . '</code>' .
+      '<code>' . check_markup($ffmpeg_object->output) . '</code>'
+  );
+  return $form['converted'];
+
+}
+
+/**
+ * Provides the transcoding services via JS.
+ *
+ * This is cribbed from upload.module
+ * @return unknown_type
+ */
+function ffmpeg_wrapper_ui_transcoding_status($fid) {
+  $progress = array(
+    'message' => t('Transcoding....'),
+    'percentage' => 0
+  );
+  $cid = 'ffmpeg_wrapper_transcoding_progress_' . $fid;
+  $cache = cache_get($cid);
+  if (! empty($cache->data)) {
+    $progress['message'] = t('Transcoded %completed of %file_duration', array(
+      '%completed' => gmdate('H:i:s', $cache->data['completed']),
+      '%file_duration' => gmdate('H:i:s', $cache->data['file_duration'])
+    ));
+    if ($complete = round($cache->data['completed'] / $cache->data['file_duration'] * 100)) {
+      $progress['percentage'] = $complete;
+    }
+  }
+  drupal_json_output($progress);
+}
+
+
+/**
+ * Download a converted file
+ *
+ * This allows for converted file downloads from the temp directory.
+ */
+function ffmpeg_wrapper_ui_download_file($form, $form_state) {
+  // Get the file path from the form
+  $filepath = $form_state['storage']['ffmpeg_object']->output_file;
+
+  // Set the headers
+  $headers['Content-Type'] = file_get_mimetype($filepath);
+  $headers['Content-Description'] = 'File Transfer';
+  $headers['Content-Disposition'] = 'attachment; filename="' . basename($filepath) . '";';
+  $headers['Content-Transfer-Encoding'] = 'binary';
+
+  foreach ($headers as $name => $value) {
+    drupal_add_http_header($name, $value);
+  }
+  drupal_send_headers();
+
+
+  // Below is cribed from file.inc file_transfer() This reimplements to make it
+  // easy to handle an absolute path on the local file system since this is the
+  // value that $ffmpeg has
+  // -------------------
+  // Transfer file in 1024 byte chunks to save memory usage.
+  $fd = fopen($filepath, 'rb');
+  while (!feof($fd)) {
+     print fread($fd, 1024);
+  }
+  fclose($fd);
+  drupal_exit();
+}
+
+
+/**
+ * Attach a transcoded file back to a node
+ *
+ * @TODO filefield needs better support
+ *
+ * @param $node
+ *   object, drupal node object
+ * @param $filename
+ *   string, name of the file to transfer
+ * @return unknown_type
+ */
+function ffmpeg_wrapper_ui_attach_file(&$form, &$form_state) {
+
+
+  /* $file = file_load($form_state['storage']['file']->fid);
+    if (! $file->status) {
+      $file->status = FILE_STATUS_PERMANENT;
+      file_save($file);
+    }
+
+   */
+  global $user;
+   $filename = basename($form_state['storage']['ffmpeg_object']->output_file);
+   $file = new stdClass();
+
+   $file->uri = 'public://' . $filename;
+   $file->status = FILE_STATUS_PERMANENT;
+   $file->uid = $user->uid;
+   $file->filename = $filename;
+   $file->filemime = file_get_mimetype($form_state['storage']['ffmpeg_object']->output_file);
+   $file->filesize = $form_state['storage']['ffmpeg_object']->output_file;
+   file_save($file, file_default_scheme());
+
+    $form_state['rebuild'] = TRUE;
+    return;
+
+
+  // Get the node object
+  if ($form_state['values']['node']) {
+    $node = $form_state['values']['node'];
+  }
+  else if ($node_nid = $form_state['values']['node_file_attach']) {
+    // search for the nid
+    preg_match("/.*\[nid:(.*?)\]/", $node_nid, $matches);
+    if ($matches[1]) {
+      $node = node_load($matches[1]);
+    }
+  }
+  if (! $node) {
+    drupal_set_message(t('Did not find a node to attach this file to.', 'error'));
+    return;
+  }
+
+  // Get the file path from the form
+  $filepath = $form_state['storage']['ffmpeg_object']->output_file;
+
+  // Copy the file to the files directory
+  file_copy($filepath);
+
+  // Build the file object
+  $file = new stdClass();
+  $file->new = TRUE;
+  $file->uid = $node->uid;
+  $file->filename = basename($filepath);
+  $file->filepath = $filepath;
+  $file->filemime = file_get_mimetype($filepath);
+  $file->filesize = filesize($filepath);
+  $file->timestamp = time();
+  $file->list = variable_get('upload_list_default', 1);
+  $file->status = 1;
+  // Save the new file to the files table
+  drupal_write_record('files', $file);
+
+  // Where did the source file come from?
+  $location = ffmpeg_wrapper_ui_find_fid($node, $form_state['storage']['file']->fid);
+
+  // Did this file come from the standard drupal upload?
+  if ($location['type'] == 'upload') {
+    // add the file to the node object
+    $node->files[$file->fid] = $file;
+    drupal_set_message(t('Attached your transcoded file'));
+  }
+  // Did this come from a file field?
+  if ($location['type'] == 'filefield') {
+    $node->{$location['field_name']}[$location['id']] = (array) $file;
+    drupal_set_message(t('Replaced file with the transcoded one'));
+  }
+
+  // Save the modified node
+  node_save($node);
+  unset($form_state['storage']);
+  $form['#redirect'] = 'node/'. $node->nid .'/edit';
+  $form_state['rebuild'] = FALSE;
+}
+
+
+/**
+ * The upload validation
+ *
+ * @param unknown_type $form
+ * @param unknown_type $form_state
+ */
+function ffmpeg_wrapper_ui_admin_convert_form_validate(&$form, &$form_state) {
+  // Validate the upload
+  if (isset($form_state['values']['upload'])) {
+    $validation['file_validate_extensions'] = array(implode(' ', array_keys(ffmpeg_wrapper_get_formats())));
+    // Save new file uploads.
+    if ($file = file_save_upload('upload', $validation)) {
+      $file->list = variable_get('upload_list_default', 1);
+      $file->description = $file->filename;
+      $file->weight = 0;
+      $file->new = TRUE;
+      $form_state['storage']['file'] = $file;
+    }
+    else {
+      form_set_error('upload', t('Your file failed to upload'));
+    }
+  }
+}
+
+
+/**
+ * The upload submit form
+ *
+ * @param unknown_type $form
+ * @param unknown_type $form_state
+ */
+function ffmpeg_wrapper_ui_admin_convert_form_submit(&$form, &$form_state) {
+  $form_state['rebuild'] = TRUE;
+}
+
+
+/**
+ * Utility function to return supported output formats
+ *
+ * @param $type
+ *   String, one of encode or decode
+ */
+function _ffmpeg_wrapper_ui_supported_formats($type = 'encode') {
+  $output = array();
+  $formats = ffmpeg_wrapper_get_formats();
+  foreach ($formats as $format) {
+    if ($format[$type]) {
+      $output[$format['format']] = $format['format'];
+    }
+  }
+  return $output;
+}
+
+
+/**
+ * Utility function to return supported codecs
+ * @param unknown_type $kind
+ * @param unknown_type $operation
+ */
+function _ffmpeg_wrapper_ui_list_supported_codecs($kind = 'Video', $operation = 'encode') {
+  $output = array();
+  $formats = ffmpeg_wrapper_get_codecs();
+  foreach ($formats as $format) {
+    if ($format['type'] == $kind && $format[$operation]) {
+      $output[$format['format']] = $format['format'];
+    }
+  }
+  return $output;
+}
+
+
+/**
+ * Provides metadata for a specified $fid
+ * @param $node
+ * @param $fid
+ * @return string
+ */
+function ffmpeg_wrapper_ui_file_data($node, $fid) {
+ // Get the filepath for this file
+  if (! $filepath = db_result(db_query('SELECT filepath FROM {files} WHERE fid = %d', $fid))) {
+    drupal_set_message(t('Requested file was not found'));
+    drupal_not_found();
+  }
+  print(theme('ffmpeg_wrapper_ui_file_data', $filepath));
+  exit();
+}
+
+
+/**
+ * JS callback for node title lookups for attaching files
+ *
+ * @param $string
+ */
+function ffmpeg_wrapper_ui_node_lookup($string = '') {
+  $matches = array();
+  if ($string) {
+    $result = db_select('node')
+      ->fields('node', array('title', 'nid'))
+      ->condition('title', '%' . db_like($string) . '%', 'LIKE')
+      ->range(0, 10)
+      ->execute();
+    foreach ($result as $node) {
+      // @todo should get a list of fields per node here for the user
+      //       to select from
+      //       also should access check these
+      $key = check_plain($node->title) . ' [nid: ' . $node->nid . ']';
+      $matches[$key] = check_plain($node->title);
+    }
+  }
+  drupal_json_output($matches);
+}
+
+
+/**
+ * Utility function to find fid on a node
+ *
+ * @param $node
+ *   Object, Drupal node object
+ * @param $fid
+ *   Int, File id
+ * @return
+ *
+ */
+function ffmpeg_wrapper_ui_find_fid($node, $fid) {
+ // Is this file attached to this node?
+  if ($node->files[$fid]) {
+    return array('type' => 'upload');
+  }
+
+  // Implement for filefield
+  if (module_exists('filefield')) {
+    // Get all the fields for this content type
+    foreach (content_fields(NULL, $node->type) as $field_name => $field) {
+      // We only bother with file fields here
+      if ($field['type'] = 'filefield') {
+        // Does this node have any content here?
+        if ($node->{$field_name}) {
+          // Now we check to see if the incoming FID is attached to this node
+          foreach ($node->{$field_name} as $id => $item) {
+            if ($item['fid'] == $fid) {
+              return array(
+                'type' => 'filefield',
+                'field_name' => $field_name,
+                'id' => $id
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+
+/**
+ * Implements hook_media_derivatives_engine_info().
+ */
+function ffmpeg_wrapper_ui_media_derivatives_engine_info() {
+  return array(
+    'name' => t('Convert with FFmpeg'),
+    'type' => 'video',
+    'ui_callback' => 'ffmpeg_wrapper_ui_configuration_form'
+  );
+}
+
+
+/**
+ * Implements hook_media_derivatives_create_derivative().
+ *
+ * @param type $file
+ * @param type $derivative
+ * @return type
+ */
+function ffmpeg_wrapper_ui_media_derivatives_create_derivative($file, $derivative) {
+  watchdog('ffmpeg file', print_r($file, true));
+  watchdog('ffmpeg deriv', print_r($derivative, true));
+  $params = $derivative->preset->engine_settings;
+  // need to set the source here.
+  if (! $params = ffmpeg_wrapper_uri_to_path($file->uri)) {
+    $ex = new MediaDerivativesException($derivative->mdid, t('Unable to convert
+      a non-local file. It is likely a stream wrapper is being used that is not
+      local to your server. The URI is: %uri', array('%uri' => $file->uri)
+    ));
+    throw $ex;
+  }
+  dpm($derivative);
+ // dpm($file);
+  dpm('running diriv');
+  // Convert
+ // $ffmpeg = ffmpeg_wrapper_convert_file($params, $file);
+
+  // Need to extract the
+
+
+  // Return file.
+ // return $new_file;
+}
