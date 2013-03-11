@@ -5,7 +5,7 @@
 # 
 
 if [ $# -ne 3 ]; then
-  echo "SYNTAX: $0 DB_NAME DB_USER DB_PWD"
+  echo "Syntax (in Drupal docroot): $0 DB_NAME DB_USER DB_PWD"
   echo "  DB_NAME: Name of a temporary database"
   echo "  DB_USER: User of a temporary database"
   echo "  DB_PWD:  Password of a temporary database"
@@ -22,5 +22,6 @@ fi
 
 drush sql-dump --structure-tables-key=structure | $MYSQL
 cat $DIR/sanitize.sql | $MYSQL
-mysqldump $1 -u$2 -p$3 --opt > $DIR/../export/dump.sql
-grep ^DROP | $MYSQL
+mysqldump $1 -u$2 -p$3 --opt --skip-extended-insert > $DIR/../export/dump.sql
+grep ^DROP $DIR/../export/dump.sql | $MYSQL
+
