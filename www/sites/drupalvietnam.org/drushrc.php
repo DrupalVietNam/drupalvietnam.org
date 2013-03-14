@@ -8,6 +8,8 @@ $options['structure-tables'] = array(
     'flood',
     'history',
     'mollom',
+    'openid_association',
+    'queue',
     'search_dataset',
     'search_index',
     'search_node_links',

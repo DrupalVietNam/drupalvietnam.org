@@ -2,6 +2,8 @@
 
 #
 # Export and sanitize the Drupal database to remove sensitive information.
+# A better way could be:
+# drush sql-sync --target-dump=../export/dump.sql --sanitize --structure-tables-key=structure
 # 
 
 if [ $# -ne 3 ]; then
