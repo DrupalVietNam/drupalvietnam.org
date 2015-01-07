@@ -12,4 +12,5 @@ function drupalvietnam_node_view_alter(&$build) {
     drupal_set_breadcrumb($breadcrumb);
   }
 }
+
 //@end module
