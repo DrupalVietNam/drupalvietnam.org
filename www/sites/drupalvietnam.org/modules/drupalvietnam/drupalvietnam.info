@@ -1,0 +1,5 @@
+name = DrupalVietnam
+description = Fix issues here https://github.com/DrupalVietNam/drupalvietnam.org/issues.
+package = DrupalVietnam
+version = 7.x-1.0
+core = 7.x

@@ -1,0 +1,16 @@
+<?php
+
+/**
+ * Implements hook_node_view_alter().
+ */
+function drupalvietnam_node_view_alter(&$build) {
+ 
+  $breadcrumb = array();
+  if ($build['#node']->type == 'job' && $build['#view_mode'] == 'full') {
+    $breadcrumb[] = l(t('Home'), '<front>');
+    $breadcrumb[] = l(t('Jobs'), 'viec-lam');
+    drupal_set_breadcrumb($breadcrumb);
+  }
+}
+
+//@end module
