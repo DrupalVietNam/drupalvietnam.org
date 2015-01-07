@@ -1,15 +1,15 @@
 <?php
 
 /**
- * Implements hook_menu_breadcrumb_alter().
+ * Implements hook_node_view_alter().
  */
-function drupalvietnam_menu_breadcrumb_alter(&$active_trail, $item) {
-	if (!drupal_is_front_page()) {
-    $end = end($active_trail);
-    if ($item['href'] == $end['href']) {
-       $active_trail[] = $end;
-    }
+function drupalvietnam_node_view_alter(&$build) {
+ 
+  $breadcrumb = array();
+  if ($build['#node']->type == 'job' && $build['#view_mode'] == 'full') {
+    $breadcrumb[] = l(t('Home'), '<front>');
+    $breadcrumb[] = l(t('Jobs'), 'viec-lam');
+    drupal_set_breadcrumb($breadcrumb);
   }
 }
-
 //@end module
