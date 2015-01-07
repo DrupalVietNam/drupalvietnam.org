@@ -1,0 +1,15 @@
+<?php
+
+/**
+ * Implements hook_menu_breadcrumb_alter().
+ */
+function drupalvietnam_menu_breadcrumb_alter(&$active_trail, $item) {
+	if (!drupal_is_front_page()) {
+    $end = end($active_trail);
+    if ($item['href'] == $end['href']) {
+       $active_trail[] = $end;
+    }
+  }
+}
+
+//@end module
